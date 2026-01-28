@@ -47,9 +47,10 @@ That's it. Zero config.
 
 ### GitHub Security Tab
 
-![Security Tab](docs/security-tab.png)
-
-Assay findings appear alongside CodeQL, Dependabot, etc.
+Assay findings appear in your repository's **Security** tab alongside CodeQL, Dependabot, and other security tools. Each finding includes:
+- Severity level (error/warning)
+- Rule ID and description
+- Location in the evidence bundle
 
 ### PR Comment (only if issues)
 
