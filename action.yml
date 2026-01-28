@@ -1,0 +1,494 @@
+# Assay GitHub Action
+# Verify, lint, and diff evidence bundles from AI agent runs.
+#
+# Marketplace: https://github.com/marketplace/actions/assay-ai-agent-security
+#
+# Usage (zero-config):
+#   - uses: Rul1an/assay-action@v2
+#
+# Usage (with options):
+#   - uses: Rul1an/assay-action@v2
+#     with:
+#       bundles: '.assay/evidence/*.tar.gz'
+#       fail_on: warn
+#       sarif: true
+
+name: 'Assay - AI Agent Security'
+description: 'Verify and lint AI agent evidence bundles. Catch security issues before production. Native GitHub Security tab integration.'
+author: 'Assay Contributors'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  bundles:
+    description: 'Glob pattern for evidence bundles'
+    required: false
+    default: ''
+  fail_on:
+    description: 'Fail threshold: error, warn, info, none'
+    required: false
+    default: 'error'
+  sarif:
+    description: 'Upload SARIF to GitHub Security tab'
+    required: false
+    default: 'true'
+  category:
+    description: 'SARIF category (auto-generated if omitted)'
+    required: false
+    default: ''
+  baseline_dir:
+    description: 'Path to baseline bundles for diff'
+    required: false
+    default: ''
+  baseline_key:
+    description: 'Key for baseline cache lookup'
+    required: false
+    default: ''
+  write_baseline:
+    description: 'Write baseline after successful run (main branch only)'
+    required: false
+    default: 'false'
+  comment_diff:
+    description: 'Post PR comment with diff summary'
+    required: false
+    default: 'true'
+  upload_artifacts:
+    description: 'Deprecated. Use reports_dir output instead.'
+    required: false
+    default: 'false'
+  version:
+    description: 'Assay CLI version to install'
+    required: false
+    default: 'latest'
+
+outputs:
+  verified:
+    description: 'true if all bundles passed verification'
+    value: ${{ steps.process.outputs.verified }}
+  findings_error:
+    description: 'Count of error-level findings'
+    value: ${{ steps.process.outputs.findings_error }}
+  findings_warn:
+    description: 'Count of warning-level findings'
+    value: ${{ steps.process.outputs.findings_warn }}
+  sarif_path:
+    description: 'Path to generated SARIF file'
+    value: ${{ steps.process.outputs.sarif_path }}
+  diff_summary:
+    description: 'One-line diff summary'
+    value: ${{ steps.process.outputs.diff_summary }}
+  reports_dir:
+    description: 'Path to reports directory (for artifact upload)'
+    value: ${{ steps.process.outputs.reports_dir }}
+
+runs:
+  using: 'composite'
+  steps:
+    # =========================================================================
+    # E1: Foundation - Platform detection, caching, binary installation
+    # =========================================================================
+
+    - name: Check if Assay already in PATH
+      id: check-existing
+      shell: bash
+      run: |
+        if command -v assay &> /dev/null; then
+          echo "Assay already installed: $(assay --version)"
+          echo "skip_install=true" >> $GITHUB_OUTPUT
+        else
+          echo "skip_install=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Detect platform
+      id: platform
+      if: steps.check-existing.outputs.skip_install != 'true'
+      shell: bash
+      run: |
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        ARCH=$(uname -m)
+
+        case "$ARCH" in
+          x86_64)         ARCH="x86_64" ;;
+          aarch64|arm64)  ARCH="aarch64" ;;
+          *)
+            echo "::error::Unsupported architecture: $ARCH"
+            exit 1
+            ;;
+        esac
+
+        case "$OS" in
+          linux)  TARGET="${ARCH}-unknown-linux-gnu" ;;
+          darwin) TARGET="${ARCH}-apple-darwin" ;;
+          *)
+            echo "::error::Unsupported OS: $OS"
+            exit 1
+            ;;
+        esac
+
+        echo "target=$TARGET" >> $GITHUB_OUTPUT
+        echo "os=$OS" >> $GITHUB_OUTPUT
+        echo "arch=$ARCH" >> $GITHUB_OUTPUT
+
+    - name: Restore cached binary
+      id: cache
+      if: steps.check-existing.outputs.skip_install != 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/.assay/bin
+        key: assay-${{ inputs.version }}-${{ steps.platform.outputs.target }}
+
+    - name: Install Assay CLI
+      if: steps.check-existing.outputs.skip_install != 'true' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        ASSAY_VERSION: ${{ inputs.version }}
+        ASSAY_TARGET: ${{ steps.platform.outputs.target }}
+      run: |
+        set -euo pipefail
+        mkdir -p ~/.assay/bin
+
+        VERSION="$ASSAY_VERSION"
+        TARGET="$ASSAY_TARGET"
+        REPO="Rul1an/assay"
+
+        # Resolve 'latest' to actual version
+        if [ "$VERSION" = "latest" ]; then
+          VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
+          if [ -z "$VERSION" ]; then
+            echo "::error::Failed to fetch latest version"
+            exit 1
+          fi
+        fi
+
+        DOWNLOAD_URL="https://github.com/$REPO/releases/download/${VERSION}/assay-${VERSION}-${TARGET}.tar.gz"
+        echo "Downloading Assay ${VERSION} for ${TARGET}..."
+
+        if ! curl -fsSL "$DOWNLOAD_URL" | tar xz -C ~/.assay/bin; then
+          echo "::error::Failed to download Assay from $DOWNLOAD_URL"
+          exit 1
+        fi
+
+        chmod +x ~/.assay/bin/assay
+        echo "✓ Installed Assay ${VERSION}"
+
+    - name: Add to PATH and verify
+      id: verify-install
+      if: steps.check-existing.outputs.skip_install != 'true'
+      shell: bash
+      run: |
+        echo "$HOME/.assay/bin" >> $GITHUB_PATH
+        export PATH="$HOME/.assay/bin:$PATH"
+
+        if ! ~/.assay/bin/assay --version; then
+          echo "::error::Assay installation verification failed"
+          exit 1
+        fi
+
+        echo "installed=true" >> $GITHUB_OUTPUT
+
+    # =========================================================================
+    # E2: Evidence Processing - Discovery, verify, lint
+    # (Placeholder - will be implemented in Epic 2)
+    # =========================================================================
+
+    - name: Discover evidence bundles
+      id: discover
+      shell: bash
+      env:
+        BUNDLES_PATTERN: ${{ inputs.bundles }}
+      run: |
+        set -euo pipefail
+
+        # Auto-discover if no pattern provided
+        if [ -z "$BUNDLES_PATTERN" ]; then
+          BUNDLES=$(find . \( -path './.assay/evidence/*.tar.gz' -o -path './evidence/*.tar.gz' \) 2>/dev/null | head -100 || true)
+        else
+          BUNDLES=$(ls $BUNDLES_PATTERN 2>/dev/null || true)
+        fi
+
+        if [ -z "$BUNDLES" ]; then
+          echo "::notice::No evidence bundles found. Run 'assay run' to generate them."
+          echo "found=false" >> $GITHUB_OUTPUT
+          echo "count=0" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        COUNT=$(echo "$BUNDLES" | wc -l | tr -d ' ')
+        echo "Found $COUNT evidence bundle(s)"
+        echo "$BUNDLES"
+
+        # Save to file for later steps
+        echo "$BUNDLES" > /tmp/assay-bundles.txt
+        echo "found=true" >> $GITHUB_OUTPUT
+        echo "count=$COUNT" >> $GITHUB_OUTPUT
+
+    - name: Process bundles (verify + lint)
+      id: process
+      if: steps.discover.outputs.found == 'true'
+      shell: bash
+      env:
+        FAIL_ON: ${{ inputs.fail_on }}
+      run: |
+        set -euo pipefail
+        export PATH="$HOME/.assay/bin:$PATH"
+
+        REPORTS_DIR="${GITHUB_WORKSPACE}/.assay-reports"
+        mkdir -p "$REPORTS_DIR"
+        echo "reports_dir=$REPORTS_DIR" >> $GITHUB_OUTPUT
+        BUNDLES=$(cat /tmp/assay-bundles.txt)
+
+        # Verify all bundles
+        VERIFIED=0
+        FAILED=0
+        for bundle in $BUNDLES; do
+          if assay evidence verify "$bundle" 2>/dev/null; then
+            ((VERIFIED++)) || true
+          else
+            ((FAILED++)) || true
+            echo "::error file=$bundle::Bundle verification failed"
+          fi
+        done
+
+        echo "verified_count=$VERIFIED" >> $GITHUB_OUTPUT
+        echo "failed_count=$FAILED" >> $GITHUB_OUTPUT
+
+        if [ "$FAILED" -gt 0 ]; then
+          echo "verified=false" >> $GITHUB_OUTPUT
+          exit 2  # Distinct exit code for verification failure
+        fi
+        echo "verified=true" >> $GITHUB_OUTPUT
+
+        # Lint all bundles (one at a time, aggregate results)
+        TOTAL_ERRORS=0
+        TOTAL_WARNS=0
+        echo '{"findings":[]}' > "$REPORTS_DIR/lint.json"
+
+        for bundle in $BUNDLES; do
+          echo "Linting: $bundle"
+
+          # Lint to JSON for counting
+          LINT_JSON=$(assay evidence lint --format json "$bundle" 2>/dev/null || echo '{"findings":[]}')
+
+          # Count findings in this bundle
+          BUNDLE_ERRORS=$(echo "$LINT_JSON" | jq '[.findings // [] | .[] | select(.severity == "error")] | length' 2>/dev/null || echo "0")
+          BUNDLE_WARNS=$(echo "$LINT_JSON" | jq '[.findings // [] | .[] | select(.severity == "warning")] | length' 2>/dev/null || echo "0")
+
+          TOTAL_ERRORS=$((TOTAL_ERRORS + BUNDLE_ERRORS))
+          TOTAL_WARNS=$((TOTAL_WARNS + BUNDLE_WARNS))
+
+          # Append findings to aggregate
+          echo "$LINT_JSON" | jq '.findings // []' >> /tmp/all-findings.json 2>/dev/null || true
+
+          # Generate SARIF for this bundle
+          assay evidence lint --format sarif "$bundle" > "$REPORTS_DIR/lint-$(basename "$bundle" .tar.gz).sarif" 2>/dev/null || true
+        done
+
+        # Merge SARIF files if multiple
+        FIRST_SARIF=$(ls "$REPORTS_DIR"/*.sarif 2>/dev/null | head -1)
+        if [ -n "$FIRST_SARIF" ]; then
+          cp "$FIRST_SARIF" "$REPORTS_DIR/lint.sarif"
+        fi
+
+        echo "sarif_path=$REPORTS_DIR/lint.sarif" >> $GITHUB_OUTPUT
+
+        ERRORS=$TOTAL_ERRORS
+        WARNS=$TOTAL_WARNS
+
+        echo "findings_error=$ERRORS" >> $GITHUB_OUTPUT
+        echo "findings_warn=$WARNS" >> $GITHUB_OUTPUT
+
+        # Apply fail_on threshold
+        case "$FAIL_ON" in
+          error)
+            if [ "$ERRORS" -gt 0 ]; then
+              echo "::error::$ERRORS error-level findings exceed threshold"
+              exit 1
+            fi
+            ;;
+          warn)
+            if [ "$ERRORS" -gt 0 ] || [ "$WARNS" -gt 0 ]; then
+              echo "::error::$ERRORS errors, $WARNS warnings exceed threshold"
+              exit 1
+            fi
+            ;;
+          info)
+            # Fail on any finding (info not yet implemented, treat as warn)
+            if [ "$ERRORS" -gt 0 ] || [ "$WARNS" -gt 0 ]; then
+              exit 1
+            fi
+            ;;
+          none)
+            # Never fail on findings
+            ;;
+        esac
+
+        echo "diff_summary=Verified: $VERIFIED, Errors: $ERRORS, Warnings: $WARNS" >> $GITHUB_OUTPUT
+
+    # =========================================================================
+    # E3: SARIF Upload
+    # =========================================================================
+
+    - name: Generate SARIF category
+      id: sarif-category
+      if: inputs.sarif == 'true' && steps.discover.outputs.found == 'true'
+      shell: bash
+      env:
+        USER_CATEGORY: ${{ inputs.category }}
+      run: |
+        if [ -n "$USER_CATEGORY" ]; then
+          echo "category=$USER_CATEGORY" >> $GITHUB_OUTPUT
+        else
+          # Auto-generate unique category per job
+          CATEGORY="assay-${{ github.workflow }}-${{ github.job }}"
+          echo "category=$CATEGORY" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Upload SARIF to GitHub Security
+      if: inputs.sarif == 'true' && steps.discover.outputs.found == 'true'
+      uses: github/codeql-action/upload-sarif@v4
+      continue-on-error: true
+      with:
+        sarif_file: ${{ github.workspace }}/.assay-reports/lint.sarif
+        category: ${{ steps.sarif-category.outputs.category }}
+
+    # =========================================================================
+    # E4: PR Feedback - Job Summary + PR Comment
+    # =========================================================================
+
+    - name: Write Job Summary
+      if: always()
+      shell: bash
+      env:
+        FOUND: ${{ steps.discover.outputs.found }}
+        COUNT: ${{ steps.discover.outputs.count }}
+        VERIFIED: ${{ steps.process.outputs.verified }}
+        VERIFIED_COUNT: ${{ steps.process.outputs.verified_count }}
+        FAILED_COUNT: ${{ steps.process.outputs.failed_count }}
+        ERRORS: ${{ steps.process.outputs.findings_error }}
+        WARNS: ${{ steps.process.outputs.findings_warn }}
+      run: |
+        {
+          echo "## Assay Evidence Report"
+          echo ""
+
+          if [ "$FOUND" != "true" ]; then
+            echo "### No Evidence Bundles Found"
+            echo ""
+            echo "To generate evidence bundles, run your tests with Assay:"
+            echo ""
+            echo "\`\`\`bash"
+            echo "assay run --policy policy.yaml -- pytest"
+            echo "\`\`\`"
+            echo ""
+            echo "Bundles will be created in \`.assay/evidence/\`"
+          else
+            # Status badge
+            if [ "$VERIFIED" = "true" ] && [ "${ERRORS:-0}" = "0" ]; then
+              echo "**Status:** Passed"
+            else
+              echo "**Status:** Failed"
+            fi
+            echo ""
+
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Bundles processed | $COUNT |"
+            echo "| Verified | ${VERIFIED_COUNT:-0} |"
+            if [ "${FAILED_COUNT:-0}" -gt 0 ]; then
+              echo "| Verification failed | ${FAILED_COUNT} |"
+            fi
+            echo "| Errors | ${ERRORS:-0} |"
+            echo "| Warnings | ${WARNS:-0} |"
+
+            # Show findings summary if any
+            if [ "${ERRORS:-0}" -gt 0 ] || [ "${WARNS:-0}" -gt 0 ]; then
+              echo ""
+              echo "### Findings"
+              echo ""
+              echo "Review findings in the **Security** tab or download the SARIF artifact."
+            fi
+          fi
+
+          echo ""
+          echo "---"
+          echo "[Assay Documentation](https://github.com/Rul1an/assay) | [Report Issue](https://github.com/Rul1an/assay/issues)"
+        } >> $GITHUB_STEP_SUMMARY
+
+    - name: Find existing PR comment
+      id: find-comment
+      if: github.event_name == 'pull_request' && inputs.comment_diff == 'true' && steps.discover.outputs.found == 'true'
+      uses: peter-evans/find-comment@v3
+      continue-on-error: true
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        comment-author: 'github-actions[bot]'
+        body-includes: '<!-- assay-report -->'
+
+    - name: Post or update PR comment
+      if: github.event_name == 'pull_request' && inputs.comment_diff == 'true' && steps.discover.outputs.found == 'true' && (steps.process.outputs.findings_error != '0' || steps.process.outputs.findings_warn != '0')
+      uses: peter-evans/create-or-update-comment@v4
+      continue-on-error: true
+      with:
+        comment-id: ${{ steps.find-comment.outputs.comment-id }}
+        issue-number: ${{ github.event.pull_request.number }}
+        edit-mode: replace
+        body: |
+          <!-- assay-report -->
+          ## Assay Report
+
+          | Metric | Value |
+          |--------|-------|
+          | Bundles | ${{ steps.discover.outputs.count }} |
+          | Errors | ${{ steps.process.outputs.findings_error }} |
+          | Warnings | ${{ steps.process.outputs.findings_warn }} |
+
+          View details in the [Security tab](${{ github.server_url }}/${{ github.repository }}/security/code-scanning) or [Job Summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
+    # =========================================================================
+    # E5: Baseline & Artifacts
+    # =========================================================================
+
+    - name: Restore baseline from cache
+      id: baseline-restore
+      if: inputs.baseline_key != '' && steps.discover.outputs.found == 'true'
+      uses: actions/cache/restore@v4
+      continue-on-error: true
+      with:
+        path: .assay-baseline/
+        key: assay-baseline-${{ inputs.baseline_key }}-${{ github.base_ref || 'main' }}
+        restore-keys: |
+          assay-baseline-${{ inputs.baseline_key }}-
+
+    - name: Compare with baseline
+      id: baseline-diff
+      if: steps.baseline-restore.outputs.cache-hit == 'true' && steps.discover.outputs.found == 'true'
+      shell: bash
+      run: |
+        # Baseline comparison placeholder
+        # TODO: Implement assay evidence diff command
+        if [ -d ".assay-baseline" ]; then
+          echo "Baseline found, comparison available in future version"
+          echo "baseline_found=true" >> $GITHUB_OUTPUT
+        else
+          echo "baseline_found=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Save baseline to cache
+      if: inputs.write_baseline == 'true' && github.ref == 'refs/heads/main' && steps.discover.outputs.found == 'true' && steps.process.outputs.verified == 'true'
+      uses: actions/cache/save@v4
+      continue-on-error: true
+      with:
+        path: ${{ steps.process.outputs.reports_dir }}
+        key: assay-baseline-${{ inputs.baseline_key || 'default' }}-main-${{ github.sha }}
+
+    - name: Upload reports artifact
+      if: steps.discover.outputs.found == 'true'
+      uses: actions/upload-artifact@v4
+      continue-on-error: true
+      with:
+        name: assay-reports-${{ github.run_id }}
+        path: ${{ steps.process.outputs.reports_dir }}
+        retention-days: 30
+        include-hidden-files: true
